@@ -9,14 +9,33 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 
 from src.models import Paper
 
+# arXiv ToS: be polite — max 1 concurrent request, 3 s between calls.
+# https://info.arxiv.org/help/api/tou.html
+_ARXIV_DELAY_SECONDS = 3.0
+_ARXIV_MAX_CONCURRENT = 1
+
 
 class ArxivClient:
-    """Async wrapper around the arxiv package for searching and fetching papers."""
+    """Async wrapper around the arxiv package for searching and fetching papers.
+
+    Enforces arXiv's rate-limit policy: one in-flight request at a time with
+    a 3-second cooldown between calls, applied globally via a module-level
+    semaphore so multiple ArxivClient instances still cooperate.
+    """
+
+    # Shared across all instances so concurrent callers don't double-fire.
+    _semaphore: asyncio.Semaphore | None = None
 
     def __init__(self) -> None:
-        self._client = arxiv.Client()
+        self._client = arxiv.Client(delay_seconds=_ARXIV_DELAY_SECONDS, num_retries=3)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+    @classmethod
+    def _get_semaphore(cls) -> asyncio.Semaphore:
+        if cls._semaphore is None:
+            cls._semaphore = asyncio.Semaphore(_ARXIV_MAX_CONCURRENT)
+        return cls._semaphore
+
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
     def _search_sync(self, query: str, categories: list[str], max_results: int) -> list[Paper]:
         """Synchronous search executed in a thread pool."""
         if categories:
@@ -68,27 +87,19 @@ class ArxivClient:
         )
 
     async def search(self, query: str, categories: list[str], max_results: int) -> list[Paper]:
-        """Search arXiv and return a list of Paper objects.
-
-        Args:
-            query: Free-text query string.
-            categories: arXiv category codes to filter by (e.g. ["cs.LG", "stat.ML"]).
-            max_results: Maximum number of results to return.
-
-        Returns:
-            List of Paper objects with basic metadata populated.
-        """
+        """Search arXiv, serialised through the global semaphore + cooldown."""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._search_sync, query, categories, max_results)
+        async with self._get_semaphore():
+            result = await loop.run_in_executor(
+                None, self._search_sync, query, categories, max_results
+            )
+            await asyncio.sleep(_ARXIV_DELAY_SECONDS)
+        return result
 
     async def fetch_by_id(self, arxiv_id: str) -> Paper | None:
-        """Fetch a single paper by its arXiv ID.
-
-        Args:
-            arxiv_id: The arXiv paper ID (e.g. "2301.07041").
-
-        Returns:
-            A Paper object if found, otherwise None.
-        """
+        """Fetch a single paper by arXiv ID, serialised through the global semaphore."""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._fetch_by_id_sync, arxiv_id)
+        async with self._get_semaphore():
+            result = await loop.run_in_executor(None, self._fetch_by_id_sync, arxiv_id)
+            await asyncio.sleep(_ARXIV_DELAY_SECONDS)
+        return result
