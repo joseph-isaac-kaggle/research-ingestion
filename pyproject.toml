@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "research-ingestion"
+version = "0.1.0"
+description = "Topics & Documentation Agent + Research Ingestion Engine — fetches and enriches arXiv papers"
+requires-python = ">=3.11"
+dependencies = [
+    "arxiv>=2.1.0",
+    "tenacity>=9.0.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
